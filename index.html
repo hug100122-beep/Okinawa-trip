@@ -1,0 +1,708 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken,
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  doc, 
+  setDoc, 
+  onSnapshot
+} from 'firebase/firestore';
+import { 
+  Plane, 
+  Hotel, 
+  MapPin, 
+  Coffee, 
+  ShoppingBag, 
+  Camera, 
+  Plus, 
+  Trash2, 
+  RefreshCw,
+  CheckSquare,
+  ExternalLink,
+  Map,
+  Check,
+  Cloud,
+  Loader2
+} from 'lucide-react';
+
+// --- Firebase Configuration & Initialization ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' 
+  ? JSON.parse(__firebase_config) 
+  : { 
+      // 這是佔位符，部署時請換成你自己的 Firebase Config
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT.firebaseapp.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT.appspot.com",
+      messagingSenderId: "SENDER_ID",
+      appId: "APP_ID"
+    };
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'okinawa-trip-2026';
+
+// --- Helper Functions ---
+const getSortValue = (timeStr) => {
+  if (!timeStr) return 9999; 
+  if (timeStr.includes("早上") || timeStr.includes("上午")) return 600;
+  if (timeStr.includes("中午")) return 1200;
+  if (timeStr.includes("下午")) return 1300;
+  if (timeStr.includes("晚上")) return 1800;
+  const match = timeStr.match(/(\d{1,2}):(\d{2})/);
+  if (match) return parseInt(match[1]) * 100 + parseInt(match[2]);
+  return 9999;
+};
+
+const sortItineraryItems = (items) => {
+  return [...items].sort((a, b) => getSortValue(a.time) - getSortValue(b.time));
+};
+
+// 自動補全 URL 協議
+const ensureUrlProtocol = (url) => {
+  if (!url) return "";
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  return `https://${url}`;
+};
+
+// --- Initial Data (Seed) ---
+const INITIAL_ITINERARY = {
+  "行前準備": [
+    { id: 'p1', time: "", content: "檢查護照效期 (需6個月以上)", type: "check", done: false },
+    { id: 'p2', time: "", content: "申請 Visit Japan Web", link: "https://vjw-lp.digital.go.jp/zh-hant/", type: "check", done: false },
+    { id: 'p6', time: "", content: "沖繩當地天氣 (Tenki.jp)", link: "https://tenki.jp/forecast/9/47/9110/", type: "check", done: false },
+    { id: 'p3', time: "", content: "購買旅遊保險", type: "check", done: false },
+    { id: 'p4', time: "", content: "確認網卡/漫遊", type: "check", done: false },
+    { id: 'p5', time: "", content: "信用卡/日幣", type: "check", done: false },
+    // 攜帶物品
+    { id: 'p7', time: "攜帶物品", content: "保暖衣物", type: "check", done: false },
+    { id: 'p8', time: "攜帶物品", content: "換洗衣物", type: "check", done: false },
+    { id: 'p9', time: "攜帶物品", content: "防曬用品 (太陽眼鏡、帽子)", type: "check", done: false },
+    { id: 'p10', time: "攜帶物品", content: "個人藥品", type: "check", done: false },
+    { id: 'p11', time: "攜帶物品", content: "充電器/行動電源", type: "check", done: false },
+  ],
+  "航班/住宿": [
+    { id: 'f1', time: "去程", content: "2026/1/8 JX312 台中(RMQ) 17:00 - 那霸(OKA) 19:30", type: "flight" },
+    { id: 'f2', time: "回程", content: "2026/1/11 JX313 那霸(OKA) 20:30 - 台中(RMQ) 21:20", type: "flight" },
+    { id: 'h1', time: "住宿", content: "JR九州Blossom那霸酒店", mapLink: "https://www.google.com/maps/search/?api=1&query=JR九州Blossom那霸酒店", type: "hotel" },
+    { id: 'h2', time: "地址", content: "2-16-1 Makishi, Naha, Okinawa", mapLink: "https://www.google.com/maps/search/?api=1&query=2-16-1+Makishi+Naha+Okinawa", type: "map" },
+  ],
+  "DAY1": [
+    { id: 'd1_1', time: "17:00-19:30", content: "JX312 台中T2 - 那霸國際航廈", mapLink: "https://www.google.com/maps/search/?api=1&query=那霸國際航廈", type: "flight" },
+    { id: 'd1_2', time: "19:30-20:30", content: "那霸搭單軌至美榮橋站 (步行6分鐘至飯店)", mapLink: "https://www.google.com/maps/search/?api=1&query=美榮橋站", type: "transport" },
+    { id: 'd1_3', time: "20:30", content: "Check in JR九州Blossom那霸酒店", mapLink: "https://www.google.com/maps/search/?api=1&query=JR九州Blossom那霸酒店", type: "hotel" },
+    { id: 'd1_4', time: "21:00", content: "晚餐：琉家拉麵 OR Oniku no isshin OR 炭火焼肉ぶち", mapLink: "https://www.google.com/maps/search/?api=1&query=琉家拉麵+那霸", type: "food" },
+  ],
+  "DAY2": [
+    { id: 'd2_1', time: "早上", content: "早餐：旅の終わりの朝ごはん", mapLink: "https://www.google.com/maps/search/?api=1&query=旅の終わりの朝ごはん", type: "food" },
+    { id: 'd2_2', time: "早上", content: "國際通逛逛 (Calbee+、淳久堂、Drug Eleven)", mapLink: "https://www.google.com/maps/search/?api=1&query=沖繩國際通", type: "shopping" },
+    { id: 'd2_3', time: "12:50", content: "嘉新酒店集合 (搭賞鯨接駁)", mapLink: "https://www.google.com/maps/search/?api=1&query=嘉新酒店+沖繩", type: "transport" },
+    { id: 'd2_4', time: "13:45~16:45", content: "賞鯨體驗 (地點：那霸三重城港)", mapLink: "https://www.google.com/maps/search/?api=1&query=那霸三重城港", type: "activity" },
+    { id: 'd2_5', time: "17:00", content: "搭接駁車回國際通", type: "transport" },
+    { id: 'd2_6', time: "18:00", content: "晚餐：Oniku no isshin OR 炭火焼肉ぶち", mapLink: "https://www.google.com/maps/search/?api=1&query=Oniku+no+isshin", type: "food" },
+  ],
+  "DAY3": [
+    { id: 'd3_1', time: "08:20", content: "縣廳前 Ryubo百貨集合 (KLOOK一日遊巴士)", mapLink: "https://www.google.com/maps/search/?api=1&query=Ryubo百貨", type: "transport" },
+    { id: 'd3_2', time: "10:05-10:35", content: "萬座毛", mapLink: "https://www.google.com/maps/search/?api=1&query=萬座毛", type: "activity" },
+    { id: 'd3_3', time: "11:25-11:55", content: "古宇利島海灘", mapLink: "https://www.google.com/maps/search/?api=1&query=古宇利島海灘", type: "activity" },
+    { id: 'd3_4', time: "12:25-15:25", content: "美麗海水族館 (含午餐時間)", mapLink: "https://www.google.com/maps/search/?api=1&query=美麗海水族館", type: "activity" },
+    { id: 'd3_5', time: "16:45-17:45", content: "沖繩美國村", mapLink: "https://www.google.com/maps/search/?api=1&query=沖繩美國村", type: "shopping" },
+    { id: 'd3_6', time: "20:00", content: "美國村煙火", type: "activity" },
+  ],
+  "DAY4": [
+    { id: 'd4_1', time: "早上", content: "搭單軌至旭橋站 OR 步行約15分鐘", mapLink: "https://www.google.com/maps/search/?api=1&query=旭橋站", type: "transport" },
+    { id: 'd4_2', time: "早上", content: "波上宮、琉球百貨、Naha OPA", mapLink: "https://www.google.com/maps/search/?api=1&query=波上宮", type: "activity" },
+    { id: 'd4_3', time: "17:00", content: "前往那霸機場 (從飯店約30分鐘)", mapLink: "https://www.google.com/maps/search/?api=1&query=那霸機場", type: "transport" },
+    { id: 'd4_4', time: "20:30-21:20", content: "JX313 那霸國際航廈 - 台中機場T2", type: "flight" },
+  ]
+};
+
+const INITIAL_EXPENSES = {
+  "如": [
+    { id: 'e_r1', item: "來回機票 (原價$8,895 - LinePay$895)", twd: 8000, jpy: 0 },
+    { id: 'e_r2', item: "住宿 (4晚分攤)", twd: 5270, jpy: 0 },
+    { id: 'e_r3', item: "KLOOK 北部一日遊", twd: 1378, jpy: 0 },
+    { id: 'e_r4', item: "賞鯨行程", twd: 1117, jpy: 0 },
+  ],
+  "紋": [
+    { id: 'e_w1', item: "來回機票", twd: 8410, jpy: 0 },
+    { id: 'e_w2', item: "住宿 (4晚分攤)", twd: 5270, jpy: 0 },
+    { id: 'e_w3', item: "KLOOK 北部一日遊", twd: 1378, jpy: 0 },
+    { id: 'e_w4', item: "賞鯨行程", twd: 1117, jpy: 0 },
+  ]
+};
+
+// --- Components ---
+
+const Loading = () => (
+  <div className="flex items-center justify-center min-h-[300px] text-stone-400">
+    <RefreshCw className="animate-spin mr-2" /> 載入中...
+  </div>
+);
+
+const TabButton = ({ active, label, onClick }) => (
+  <button
+    onClick={onClick}
+    className={`
+      w-full px-2 py-4 text-base font-bold transition-all duration-300 rounded-lg
+      ${active 
+        ? 'text-stone-900 bg-stone-200 shadow-sm border border-stone-300' 
+        : 'text-stone-400 hover:text-stone-600 hover:bg-stone-50'
+      }
+    `}
+  >
+    {label}
+  </button>
+);
+
+const getIcon = (type) => {
+  const className = "w-6 h-6 text-stone-500 mr-4 mt-1 flex-shrink-0";
+  switch (type) {
+    case 'flight': return <Plane className={className} />;
+    case 'hotel': return <Hotel className={className} />;
+    case 'food': return <Coffee className={className} />;
+    case 'shopping': return <ShoppingBag className={className} />;
+    case 'transport': return <MapPin className={className} />;
+    case 'check': return <CheckSquare className={className} />;
+    case 'map': return <MapPin className={className} />;
+    default: return <Camera className={className} />;
+  }
+};
+
+const ItineraryItem = ({ item, onSave, onDelete, isCompact }) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editData, setEditData] = useState({ ...item });
+  const [saveStatus, setSaveStatus] = useState('idle');
+  const saveTimeoutRef = useRef(null);
+
+  // Auto-Save Logic
+  useEffect(() => {
+    if (!isEditing) return;
+
+    if (JSON.stringify(editData) !== JSON.stringify(item)) {
+      setSaveStatus('saving');
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(async () => {
+        await onSave(editData);
+        setSaveStatus('saved');
+      }, 1000);
+    }
+    return () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); };
+  }, [editData, isEditing]);
+
+  const handleClose = async () => {
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    if (JSON.stringify(editData) !== JSON.stringify(item)) {
+       await onSave(editData);
+    }
+    setIsEditing(false);
+  };
+
+  const handleDelete = (e) => {
+    e.stopPropagation();
+    onDelete(item.id);
+  };
+
+  const containerClass = isCompact 
+    ? "group bg-white p-3 rounded-xl shadow-sm border border-stone-200 mb-2 flex items-start cursor-pointer active:scale-[0.99] transition-all duration-200 relative"
+    : "group bg-white p-5 rounded-2xl shadow-sm border border-stone-200 mb-4 flex items-start cursor-pointer active:scale-[0.99] transition-all duration-200 relative min-h-[120px]";
+
+  const timeClass = isCompact
+    ? "text-xs font-black text-stone-500 mb-0.5 tracking-wider uppercase"
+    : "text-sm font-black text-stone-500 mb-1 tracking-wider uppercase";
+
+  const contentClass = isCompact
+    ? `text-base font-bold text-stone-800 leading-snug ${item.type === 'check' ? 'flex items-center gap-2' : ''}`
+    : `text-lg font-bold text-stone-800 leading-snug ${item.type === 'check' ? 'flex items-center gap-3' : ''}`;
+
+  if (isEditing) {
+    return (
+      <div className={`${isCompact ? "p-3 rounded-xl mb-2" : "p-5 rounded-2xl mb-4"} bg-white shadow-md border border-stone-300 animate-fade-in relative`}>
+        <div className="space-y-3 pb-6">
+          <input
+            type="text"
+            value={editData.time}
+            onChange={(e) => setEditData({...editData, time: e.target.value})}
+            placeholder="時間 (選填)"
+            className="w-full text-lg p-2 bg-stone-50 rounded-lg border border-stone-300 focus:outline-none focus:border-stone-500 font-bold"
+          />
+          <textarea
+            value={editData.content}
+            onChange={(e) => setEditData({...editData, content: e.target.value})}
+            placeholder="行程內容"
+            className={`w-full text-lg p-2 bg-stone-50 rounded-lg border border-stone-300 focus:outline-none focus:border-stone-500 font-bold ${isCompact ? "min-h-[60px]" : "min-h-[100px]"}`}
+          />
+          
+          <div className="flex gap-2">
+            <div className="flex-1 relative">
+                <input
+                    type="text"
+                    value={editData.link || ""}
+                    onChange={(e) => setEditData({...editData, link: e.target.value})}
+                    placeholder="連結 URL"
+                    className="w-full text-base p-2 pr-8 bg-stone-50 rounded-lg border border-stone-300 focus:outline-none focus:border-stone-500"
+                />
+                {editData.link && (
+                    <a 
+                        href={ensureUrlProtocol(editData.link)} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="absolute right-2 top-2 text-blue-500 hover:text-blue-700"
+                        title="測試連結"
+                    >
+                        <ExternalLink size={16} />
+                    </a>
+                )}
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+             <div className="flex-1 relative">
+                <input
+                    type="text"
+                    value={editData.mapLink || ""}
+                    onChange={(e) => setEditData({...editData, mapLink: e.target.value})}
+                    placeholder="地圖連結 URL"
+                    className="w-full text-base p-2 pr-8 bg-stone-50 rounded-lg border border-stone-300 focus:outline-none focus:border-stone-500"
+                />
+                {editData.mapLink && (
+                    <a 
+                        href={ensureUrlProtocol(editData.mapLink)} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="absolute right-2 top-2 text-green-500 hover:text-green-700"
+                        title="測試地圖"
+                    >
+                        <Map size={16} />
+                    </a>
+                )}
+             </div>
+          </div>
+          
+          <div className="absolute bottom-3 right-3 flex items-center gap-3">
+             <div className="text-xs font-bold text-stone-400 flex items-center gap-1">
+                {saveStatus === 'saving' && <><Loader2 size={12} className="animate-spin"/> 儲存中...</>}
+                {saveStatus === 'saved' && <><Cloud size={12} /> 已自動儲存</>}
+             </div>
+             <button 
+              onClick={handleClose}
+              className="flex items-center gap-1 px-4 py-2 text-white bg-[#8D887D] hover:bg-[#7a766c] rounded-full shadow-md transition-colors text-sm font-bold"
+            >
+              <Check size={16} /> 完成
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div 
+      className={containerClass}
+      onClick={() => setIsEditing(true)}
+    >
+      {getIcon(item.type)}
+      <div className="flex-1 pr-10">
+        {item.time && (
+          <div className={timeClass}>
+            {item.time}
+          </div>
+        )}
+        <div className={contentClass}>
+           {item.type === 'check' && (
+             <span className={`w-5 h-5 border-2 rounded ${item.done ? 'bg-stone-600 border-stone-600' : 'border-stone-400'}`}></span>
+           )}
+           {item.link ? (
+             <a 
+               href={ensureUrlProtocol(item.link)} 
+               target="_blank" 
+               rel="noopener noreferrer" 
+               className="text-blue-700 underline decoration-2 underline-offset-4 flex items-center gap-1 hover:text-blue-900 relative z-20"
+               onClick={(e) => e.stopPropagation()}
+             >
+               {item.content} <ExternalLink size={16} />
+             </a>
+           ) : (
+             item.content
+           )}
+        </div>
+      </div>
+      
+      <button 
+        onClick={handleDelete}
+        className={`absolute right-3 text-stone-300 hover:text-red-500 active:text-red-600 transition-colors z-20 ${isCompact ? "top-2 p-1" : "top-3 p-2"}`}
+        title="直接刪除"
+      >
+        <Trash2 size={isCompact ? 20 : 24} />
+      </button>
+
+      {item.mapLink && (
+        <a
+          href={ensureUrlProtocol(item.mapLink)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`absolute right-3 text-[#8D887D] hover:text-stone-600 active:text-stone-800 transition-colors z-20 ${isCompact ? "bottom-2 p-1" : "bottom-3 p-2"}`}
+          title="開啟地圖"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <Map size={isCompact ? 20 : 24} />
+        </a>
+      )}
+    </div>
+  );
+};
+
+const ExpenseItem = ({ item, rate, onSave, onDelete }) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editData, setEditData] = useState({ ...item });
+  const [saveStatus, setSaveStatus] = useState('idle');
+  const saveTimeoutRef = useRef(null);
+
+  useEffect(() => {
+    if (!isEditing) return;
+    if (JSON.stringify(editData) !== JSON.stringify(item)) {
+      setSaveStatus('saving');
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(async () => {
+        await onSave({
+            ...editData,
+            twd: Number(editData.twd),
+            jpy: Number(editData.jpy)
+        });
+        setSaveStatus('saved');
+      }, 1000);
+    }
+    return () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); };
+  }, [editData, isEditing]);
+
+  const handleClose = async () => {
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    if (JSON.stringify(editData) !== JSON.stringify(item)) {
+       await onSave({
+            ...editData,
+            twd: Number(editData.twd),
+            jpy: Number(editData.jpy)
+        });
+    }
+    setIsEditing(false);
+  };
+
+  const handleDelete = (e) => {
+    e.stopPropagation();
+    onDelete(item.id);
+  };
+
+  if (isEditing) {
+    return (
+      <div className="bg-white p-5 rounded-2xl shadow-md border border-stone-200 mb-4 relative">
+        <div className="space-y-4 pb-8">
+          <input
+            type="text"
+            value={editData.item}
+            onChange={(e) => setEditData({...editData, item: e.target.value})}
+            className="w-full text-lg p-3 bg-stone-50 rounded-lg border border-stone-300 font-bold"
+            placeholder="項目名稱"
+          />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+                <label className="text-sm font-bold text-stone-500 mb-1 block">台幣 (TWD)</label>
+                <input
+                    type="number"
+                    value={editData.twd}
+                    onChange={(e) => setEditData({...editData, twd: e.target.value})}
+                    className="w-full text-lg p-3 bg-stone-50 rounded-lg border border-stone-300 font-bold"
+                />
+            </div>
+            <div>
+                <label className="text-sm font-bold text-stone-500 mb-1 block">日幣 (JPY)</label>
+                <input
+                    type="number"
+                    value={editData.jpy}
+                    onChange={(e) => setEditData({...editData, jpy: e.target.value})}
+                    className="w-full text-lg p-3 bg-stone-50 rounded-lg border border-stone-300 font-bold"
+                />
+            </div>
+          </div>
+          
+           <div className="absolute bottom-3 right-3 flex items-center gap-3">
+             <div className="text-xs font-bold text-stone-400 flex items-center gap-1">
+                {saveStatus === 'saving' && <><Loader2 size={12} className="animate-spin"/> 儲存中...</>}
+                {saveStatus === 'saved' && <><Cloud size={12} /> 已自動儲存</>}
+             </div>
+             <button 
+              onClick={handleClose}
+              className="flex items-center gap-1 px-4 py-2 text-white bg-[#8D887D] hover:bg-[#7a766c] rounded-full shadow-md transition-colors text-sm font-bold"
+            >
+              <Check size={16} /> 完成
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div 
+      onClick={() => setIsEditing(true)}
+      className="bg-white p-5 rounded-2xl shadow-sm border border-stone-200 mb-4 flex justify-between items-center cursor-pointer active:scale-[0.99] transition-all relative group"
+    >
+      <div>
+        <div className="text-xl font-black text-stone-800">{item.item}</div>
+        <div className="text-sm font-bold text-stone-500 mt-1">
+          {item.twd > 0 && `NT$${item.twd.toLocaleString()} `}
+          {item.twd > 0 && item.jpy > 0 && ` + `}
+          {item.jpy > 0 && `¥${item.jpy.toLocaleString()}`}
+        </div>
+      </div>
+      <div className="text-right mr-10">
+        <div className="text-2xl font-black text-stone-800">NT${Math.round(Number(item.twd) + (Number(item.jpy) * rate)).toLocaleString()}</div>
+        {item.jpy > 0 && <div className="text-xs font-bold text-stone-400">匯率 {rate}</div>}
+      </div>
+
+      <button 
+        onClick={handleDelete}
+        className="absolute top-5 right-3 p-3 text-stone-300 hover:text-red-500 active:text-red-600 transition-colors z-20"
+        title="直接刪除"
+      >
+        <Trash2 size={24} />
+      </button>
+    </div>
+  );
+};
+
+// --- Main App Component ---
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [activeTab, setActiveTab] = useState('DAY1');
+  const [itinerary, setItinerary] = useState(null);
+  const [expenses, setExpenses] = useState(null);
+  const [rate, setRate] = useState(0.23); 
+
+  useEffect(() => {
+    const initAuth = async () => {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    fetch('https://api.exchangerate-api.com/v4/latest/JPY')
+      .then(res => res.json())
+      .then(data => {
+        if (data.rates && data.rates.TWD) {
+          setRate(data.rates.TWD);
+        }
+      })
+      .catch(err => console.error("Rate fetch error", err));
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const itineraryRef = doc(db, 'artifacts', appId, 'public', 'data', 'itinerary', 'main');
+    const expensesRef = doc(db, 'artifacts', appId, 'public', 'data', 'expenses', 'main');
+
+    const unsubItinerary = onSnapshot(itineraryRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setItinerary(docSnap.data());
+      } else {
+        setItinerary(INITIAL_ITINERARY);
+        setDoc(itineraryRef, INITIAL_ITINERARY);
+      }
+    }, (error) => console.error("Itinerary sync error", error));
+
+    const unsubExpenses = onSnapshot(expensesRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setExpenses(docSnap.data());
+      } else {
+        setExpenses(INITIAL_EXPENSES);
+        setDoc(expensesRef, INITIAL_EXPENSES);
+      }
+    }, (error) => console.error("Expenses sync error", error));
+
+    return () => {
+      unsubItinerary();
+      unsubExpenses();
+    };
+  }, [user]);
+
+  const handleItineraryUpdate = async (updatedItem) => {
+    if (!itinerary) return;
+    const newList = itinerary[activeTab].map(i => i.id === updatedItem.id ? updatedItem : i);
+    const sortedList = sortItineraryItems(newList);
+    const newData = { ...itinerary, [activeTab]: sortedList };
+    setItinerary(newData); 
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'itinerary', 'main'), newData);
+  };
+
+  const handleItineraryDelete = async (id) => {
+    if (!itinerary) return;
+    const newList = itinerary[activeTab].filter(i => i.id !== id);
+    const newData = { ...itinerary, [activeTab]: newList };
+    setItinerary(newData);
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'itinerary', 'main'), newData);
+  };
+
+  const handleItineraryAdd = async () => {
+    if (!itinerary) return;
+    const newItem = {
+      id: Date.now().toString(),
+      time: "",
+      content: "新行程...",
+      type: "activity"
+    };
+    const newList = [...itinerary[activeTab], newItem];
+    const sortedList = sortItineraryItems(newList);
+    const newData = { ...itinerary, [activeTab]: sortedList };
+    setItinerary(newData);
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'itinerary', 'main'), newData);
+  };
+
+  const handleExpenseUpdate = async (updatedItem) => {
+    if (!expenses) return;
+    const person = activeTab.includes("如") ? "如" : "紋";
+    const newList = expenses[person].map(i => i.id === updatedItem.id ? updatedItem : i);
+    const newData = { ...expenses, [person]: newList };
+    setExpenses(newData);
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'expenses', 'main'), newData);
+  };
+
+  const handleExpenseDelete = async (id) => {
+    if (!expenses) return;
+    const person = activeTab.includes("如") ? "如" : "紋";
+    const newList = expenses[person].filter(i => i.id !== id);
+    const newData = { ...expenses, [person]: newList };
+    setExpenses(newData);
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'expenses', 'main'), newData);
+  };
+
+  const handleExpenseAdd = async () => {
+    if (!expenses) return;
+    const person = activeTab.includes("如") ? "如" : "紋";
+    const newItem = {
+      id: Date.now().toString(),
+      item: "新支出項目",
+      twd: 0,
+      jpy: 0
+    };
+    const newList = [...expenses[person], newItem];
+    const newData = { ...expenses, [person]: newList };
+    setExpenses(newData);
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'expenses', 'main'), newData);
+  };
+
+  const tabs = ["行前準備", "航班/住宿", "DAY1", "DAY2", "DAY3", "DAY4", "費用(如)", "費用(紋)"];
+  
+  const isExpenseTab = activeTab.includes("費用");
+
+  const currentPerson = activeTab.includes("如") ? "如" : (activeTab.includes("紋") ? "紋" : null);
+  const currentTotal = currentPerson && expenses 
+    ? expenses[currentPerson].reduce((acc, curr) => acc + curr.twd + (curr.jpy * rate), 0) 
+    : 0;
+  
+  if (!user || !itinerary || !expenses) return <Loading />;
+
+  return (
+    <div className="min-h-screen bg-[#FDFBF7] text-stone-800 font-sans pb-24 selection:bg-stone-200">
+      
+      <div className="bg-[#FDFBF7] sticky top-0 z-50 border-b border-stone-200 shadow-sm">
+        <div className="max-w-md mx-auto px-5 py-5 flex justify-between items-end">
+          <div>
+            <h1 className="text-3xl font-black text-stone-900 tracking-wide">Okinawa 2026</h1>
+            <p className="text-sm font-bold text-stone-500 mt-1 tracking-widest uppercase">Jan 8 - 11 • Winter Trip</p>
+          </div>
+          <div className="text-right">
+             <span className="text-xs font-bold text-stone-400 block">Rate</span>
+             <span className="text-base font-black font-mono text-stone-700">1 JPY = {rate}</span>
+          </div>
+        </div>
+
+        <div className="max-w-md mx-auto p-3">
+          <div className="grid grid-cols-4 gap-2">
+            {tabs.map(tab => (
+              <TabButton 
+                key={tab} 
+                active={activeTab === tab} 
+                label={tab} 
+                onClick={() => setActiveTab(tab)} 
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-md mx-auto p-5 animate-fade-in-up pb-40"> 
+        <div className="flex justify-between items-center mb-8 mt-2">
+          <h2 className="text-3xl font-black text-stone-800">{activeTab}</h2>
+        </div>
+
+        {isExpenseTab ? (
+          <div className="space-y-4">
+            {expenses[currentPerson].map(item => (
+              <ExpenseItem 
+                key={item.id} 
+                item={item} 
+                rate={rate}
+                onSave={handleExpenseUpdate}
+                onDelete={handleExpenseDelete}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-3">
+             {itinerary[activeTab] && itinerary[activeTab].map((item) => (
+               <ItineraryItem 
+                 key={item.id} 
+                 item={item} 
+                 onSave={handleItineraryUpdate}
+                 onDelete={handleItineraryDelete}
+                 isCompact={activeTab === '行前準備'} 
+               />
+             ))}
+             {itinerary[activeTab] && itinerary[activeTab].length === 0 && (
+               <div className="text-center py-16 text-stone-300 font-bold text-lg">
+                 尚無行程，點擊「新增」開始規劃
+               </div>
+             )}
+          </div>
+        )}
+      </div>
+
+      <div className="fixed bottom-0 left-0 right-0 p-4 bg-[#FDFBF7]/95 backdrop-blur-md border-t border-stone-200 z-20 flex flex-col gap-3 shadow-[0_-5px_10px_rgba(0,0,0,0.05)]">
+        
+        {isExpenseTab && (
+          <div className="flex justify-between items-end px-2 max-w-md mx-auto w-full">
+            <span className="text-stone-500 font-bold text-sm">總支出預估 (TWD)</span>
+            <span className="text-2xl font-black text-stone-800 tracking-tight">
+              ${Math.round(currentTotal).toLocaleString()}
+            </span>
+          </div>
+        )}
+
+        <div className="flex justify-center w-full">
+          <button 
+            onClick={isExpenseTab ? handleExpenseAdd : handleItineraryAdd}
+            className="w-full max-w-xs flex items-center justify-center gap-2 bg-[#8D887D] text-white px-4 py-3 rounded-xl text-base font-bold shadow-lg hover:bg-[#7a766c] transition-all active:scale-95"
+          >
+            <Plus size={20} />
+            <span>新增 {isExpenseTab ? "支出" : "行程"}</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+  );
+}
